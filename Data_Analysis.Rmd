@@ -1,0 +1,612 @@
+---
+title: "Air Quality Time Series Forecasting"
+author: "Joi Chu-Ketterer"
+date: "April ___, 2020"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  word_document: default
+---
+
+```{r}
+library(readr)
+library(ggplot2)
+library(forecast)
+library(fpp2) #this has the model packages
+library(TTR)
+library(dplyr)
+library(tidyr) #lets me fill missing data
+```
+
+-- Importing the Data --
+
+```{r}
+trace <- read.csv('clean_trace.csv')
+head(trace)
+```
+
+Converting the DATETIME data into datetime object
+```{r}
+trace$DATETIME = as.Date(trace$DATETIME, format = "%Y-%m-%d %H:%M:%S")
+```
+
+Removing unnecessary columns
+```{r}
+clean <- subset(trace, select = -c(date, county))
+clean[1, 4] <- 0
+clean <- clean %>% fill(confirmed_cases)
+head(clean)
+```
+
+```{r}
+tail(clean)
+```
+
+Confirming data types are correct
+```{r}
+str(testing)
+```
+
+-- EDA Graphs --
+```{r}
+# the color needs to be inside the aes()
+
+p <- ggplot() + ggtitle("Nitrogen Dioxide Levels in Los Angeles, CA") +
+     geom_line(data = testing, aes(x = DATETIME, y = NO2, color = "NO2")) + ylab("Concentration (ppm)") +
+  xlab("") + theme_classic() + theme(legend.position="right") +
+  theme(axis.text.x=element_text(angle=60, hjust=1))
+
+p + scale_x_date(date_labels = "%m-%Y") + scale_x_date(date_minor_breaks = "10 day") + scale_color_discrete(name="Trace Gas")
+
+```
+
+
+```{r}
+# the color needs to be inside the aes()
+
+p <- ggplot() + ggtitle("Ground-Level Ozone Levels in Los Angeles") +
+     geom_line(data = testing, aes(x = DATETIME, y = O3, color = "O2")) + ylab("Concentration(ppm") +
+  xlab("") + theme(legend.position="right") + theme_classic()+
+  theme(axis.text.x=element_text(angle=60, hjust=1))
+
+p + scale_x_date(date_labels = "%m-%Y") + scale_x_date(date_minor_breaks = "10 day") + scale_color_discrete(name="Trace Gas")
+
+```
+
+```{r}
+# the color needs to be inside the aes()
+
+p <- ggplot() + ggtitle("COVID-19 Confirmed Cases in Los Angeles, CA") +
+     geom_line(data = testing, aes(x = DATETIME, y = confirmed_cases, color = "Comfirmed Cases")) + ylab("Count") +
+  xlab("") + theme(legend.position="right") + theme_classic()+
+  theme(axis.text.x=element_text(angle=60, hjust=1))
+
+p + scale_x_date(date_labels = "%m-%Y") + scale_x_date(date_minor_breaks = "10 day") + scale_color_discrete(name="Trace Gas")
+
+```
+
+```{r}
+# the color needs to be inside the aes()
+
+p <- ggplot() + ggtitle("Trace Gas Levels in Los Angeles") +
+     geom_line(data = testing, aes(x = DATETIME, y = NO2, color = "NO2")) +
+     geom_line(data = testing, aes(x = DATETIME, y = O3, color = "O3")) +
+  xlab("") + ylab("Concentration (ppm)") + theme(legend.position="right") + theme_classic() +
+  theme(axis.text.x=element_text(angle=60, hjust=1)) + labs(legend_title='Trace Gas')
+
+legend_title <- 'Trace Gas'
+
+p + scale_x_date(date_labels = "%m-%Y") + scale_x_date(date_minor_breaks = "10 day") + scale_color_discrete(name="Trace Gas")
+```
+
+Create Time Series for Analysis
+
+```{r}
+#c(2019, 11) is year 2019, month 11
+
+time_series <- ts(clean[,2], start=c(2019,11), frequency = 3200)
+```
+
+PRELIMINARY ANALYSIS
+
+time plot
+same graph as above, use that one, prettier
+```{r}
+autoplot(time_series) + ggtitle("Time Plot NO2 Levels") + ylab("Concentration (ppm)") + theme_classic()
+```
+
+
+seasonal plot
+if data has strong seasonal trend, investigate transformations
+ - some models require stationary data (i.e. flat, and no seasonal changes)
+ 
+basically, we are making it stationary right now. seasonal patterns also make it hard to identify seasonal trends, so you want to transform them out of the data
+
+take first difference of data to remove the trend
+looking at change in NO2 levels rather than the actual dollar amount
+
+so this makes the data appear trend-stationary so we can investigate it seasonally 
+
+```{r}
+difference <- diff(time_series)
+
+p <- autoplot(difference) + ggtitle("NO2 Concentration Time Plot") +
+     ylab("ppm") + xlab("") + ylab("Concentration (ppm)") + theme(legend.position="right") + theme_classic() +
+  theme(axis.text.x=element_text(angle=60, hjust=1)) + labs(legend_title='Trace Gas')
+
+legend_title <- 'Trace Gas'
+
+p
+```
+
+```{r}
+ggseasonplot(difference) + ggtitle("Seasonal Plot: Change in NO2 levels") + ylab("ppm")
+```
+
+this should show if there are any seasonal patterns
+
+seasonal subseries plot
+```{r}
+ggsubseriesplot(difference)
+```
+this looks at the changes for each hour of each month, helps to look at difference in means per month
+
+UNIVARIATE TIME SERIES FORECASTING
+
+we don't really have seasonal trends, so we can just use regular naive modeling 
+
+NAIVE MODELING 
+
+IF it were seasonal then the math would look like 
+y_t = y_(t-s) + e_t
+the value of the data (y_t) is equal to the value of the previous year + some error 
+i.e. jan 1995 data is going to be the same as jan 1994 + error
+
+this is very good for strong seasonability. and you want to use it on the difference data, not the trend or raw data
+
+```{r}
+fit <- snaive(difference)
+summary(fit)
+checkresiduals(fit)
+```
+ 
+ residual sd: 0.6657
+ how well our data is fitting, closer to zero the better 
+ ^ that is our benchmark value
+
+ACF we want to see the left over error terms
+- we want all the bars to be within the blue lines, which is 95 confidence levels 
+- because there are lines outside, that means there are things we're not incoroprating into the forecasting model
+
+ETS MODEL
+exponential smoothing model
+
+```{r}
+fit_ets <- ets(time_series)
+summary(fit_ets)
+checkresiduals(fit_ets)
+```
+
+this specific one runs ALL the ETS models and then spits out the best one
+
+ACF is better for this, still has autocorrelation, but its not the worst
+
+sigma = residual standard deviation = 0.4675 so even better!
+
+ARIMA model
+
+data HAS to be stationary to use this model
+- we can use the difference data trend, and tell it there is seasonality 
+
+d = 1 is the same effect as how we created the dataset 'difference'
+D = 1 takes away the first seasonal difference
+^ this gets rid of trends and seasonality so our dataset is stationary 
+
+auto-arima is designed to fit multiple time series at once, so tries to do things as fast as possible, and so it approximates AIC instead of actually finding it
+
+we can turn stepwise and approximation because we're only working with one time series so we don't need to save a lot of time
+
+trace = TRUE means it will show all the models that it is creating
+```{r}
+fit_arima <- auto.arima(time_series, d = 1, D=1, stepwise = FALSE, approximation = FALSE, trace = TRUE)
+```
+
+```{r}
+summary(fit_arima)
+checkresiduals(fit_arima)
+```
+
+sigma^2 estimated as 0.2498
+so standard dev error is 0.4997
+
+actually slightly worse than ETS
+
+still some autocorrelation with few lags outside of 95 percent confidence, but of those they are not as severe as past models
+
+so the arima model is the best of them all, but its not the best yet. 
+
+FORECAST
+arima model is performing the best so we will use that model 
+
+h = 6 means to forecast 6 months in advance
+it might mean just 6 cycles?
+```{r}
+forecast_model <- forecast(fit_arima, h = 10)
+autoplot(forecast_model)
+```
+
+include = 3 means to only include the last three months
+```{r}
+autoplot(forecast_model, include = 100)
+```
+
+```{r}
+summary(forecast_model)
+```
+
+point forecast is the best guess of what will happen
+lo and hi is the lower and upper 80% interval
+^ there is an 80% chance this data will fall within this interval
+
+
+------------------------------------------------------------------
+
+
+
+DATA PREPARATION 
+data partitioning to create the models
+
+let's first create a time series from our data, and will create a monthly forecast
+
+```{r}
+ts (clean, frequency = 4, start = c(2019, 2)) # frequency 4 => Quarterly Data
+```
+
+The decompose() and forecast::stl() splits the time series into seasonality, trend and error components.
+
+```{r}
+tsData <- clean[, 1] # ts data, [,1] is the date
+```
+
+
+```{r}
+sm <- ma(ts, order=12) # 12 month moving average
+lines(sm, col="red") # plot
+```
+
+
+
+
+---------------------------------------------------------------
+
+```{r}
+library(caTools) #split the dataset
+```
+
+```{r}
+set.seed(101) 
+sample <- sample.split(clean, SplitRatio = .75)
+
+train <- subset(clean, split == "TRUE")
+test <- subset(clean, split == "FALSE")
+
+#test_model <- predict(model, test, type = "response")
+#test_model <- predict(model, train, type = "response")
+
+#split <- sample.split(binary, SplitRatio = 0.8)
+
+#train = subset(clean, sample == TRUE)
+#test  = subset(clean, sample == FALSE)
+nrow(train); nrow(test)
+```
+
+
+```{r}
+head(train)
+```
+
+first line = creating time series object
+
+MAPE = mean absolute percentage error
+- used to evaluate performance of forecasting model
+lower MAPE the better the model
+[,4] forecasts confirmed cases (incorrectly...)
+[,3] forecasts O3 levels
+[,2] forecasts NO2 levels
+[,1] is the date
+```{r}
+dat_ts <- ts(train[, 2], start = c(2019, 1), end = c(2020, 12), frequency = 12)
+ 
+#lines 2 to 4
+mape <- function(actual,pred){
+  mape <- mean(abs((actual - pred)/actual))*100
+  return (mape)
+}
+```
+
+FORECASTING METHOD ONE: NAIVE FORECASTING
+
+```{r}
+naive_mod <- naive(train$NO2)
+summary(naive_mod)
+```
+
+Point Forecast = the forecasted value
+```{r}
+test$naive = 0.3
+mape(test$NO2, test$naive) 
+```
+
+running on 77% error
+
+
+With the MAPE error value being over 100%, this actually means the value the model is predicting is greater than the actual value. Thus, it is overshooting it's predictions. 
+
+
+SIMPLE EXPONENTIAL SMOOTHING FORECASTING
+```{r}
+se_model <- ses(train$NO2)
+summary(se_model)
+```
+alpha value of 0.2965, relatively close to 1 indicates the forecasts are closer to the most recent observations. 
+
+now, to evaluate the model 
+
+```{r}
+test$simple_exp = 0.3
+mape(test$NO2, test$simple_exp) 
+```
+here the model is running at 70.38% MAPE error
+
+HOLTS TREND METHOD
+
+```{r}
+holt_model <- holt(train$NO2)
+summary(holt_model)
+```
+
+```{r}
+df_holt = as.data.frame(holt_model)
+test$holt = df_holt$`Point Forecast`
+mape(test$NO2, test$holt) 
+
+```
+```{r}
+dat_ts
+
+```
+# httr quickstart guide
+
+The goal of this document is to get you up and running with httr as quickly as possible. httr is designed to map closely to the underlying http protocol. I'll try and explain the basics in this intro, but I'd also recommend "[HTTP: The Protocol Every Web Developer Must Know][http-tutorial]" or "[HTTP made really easy](http://www.jmarshall.com/easy/http/)".
+
+This vignette (and parts of the httr API) derived from the excellent "[Requests quickstart guide](http://docs.python-requests.org/en/latest/user/quickstart/)" by Kenneth Reitz. Requests is a python library similar in spirit to httr.  
+
+There are two important parts to http: the __request__, the data sent to the server, and the __response__, the data sent back from the server. In the first section, you'll learn about the basics of constructing a request and accessing the response. In the second and third sections, you'll dive into more details of each.
+
+## httr basics
+
+To make a request, first load httr, then call `GET()` with a url:
+
+```{r}
+library(httr)
+r <- GET("http://httpbin.org/get")
+```
+
+This gives you a response object. Printing a response object gives you some useful information: the actual url used (after any redirects), the http status, the file (content) type, the size, and if it's a text file, the first few lines of output.
+
+```{r}
+r
+```
+
+You can pull out important parts of the response with various helper methods, or dig directly into the object:
+
+```{r}
+status_code(r)
+headers(r)
+str(content(r))
+```
+
+I'll use `httpbin.org` throughout this introduction. It accepts many types of http request and returns json that describes the data that it received. This makes it easy to see what httr is doing.
+
+As well as `GET()`, you can also use the `HEAD()`, `POST()`, `PATCH()`, `PUT()` and `DELETE()` verbs. You're probably most familiar with `GET()` and `POST()`: `GET()` is used by your browser when requesting a page, and `POST()` is (usually) used when submitting a form to a server. `PUT()`, `PATCH()` and `DELETE()` are used most often by web APIs.
+
+## The response 
+
+The data sent back from the server consists of three parts: the status line, the headers and the body. The most important part of the status line is the http status code: it tells you whether or not the request was successful. I'll show you how to access that data, then how to access the body and headers.
+
+### The status code
+
+The status code is a three digit number that summarises whether or not the request was successful (as defined by the server that you're talking to). You can access the status code along with a descriptive message using `http_status()`:
+
+```{r}
+r <- GET("http://httpbin.org/get")
+# Get an informative description:
+http_status(r)
+# Or just access the raw code:
+r$status_code
+```
+
+A successful request always returns a status of 200. Common errors are 404 (file not found) and 403 (permission denied). If you're talking to web APIs you might also see 500, which is a generic failure code (and thus not very helpful). If you'd like to learn more, the most memorable guides are the [http status cats](https://www.flickr.com/photos/girliemac/sets/72157628409467125).
+
+You can automatically throw a warning or raise an error if a request did not succeed:
+
+```{r}
+warn_for_status(r)
+stop_for_status(r)
+```
+
+I highly recommend using one of these functions whenever you're using httr inside a function (i.e. not interactively) to make sure you find out about errors as soon as possible.
+
+### The body
+
+There are three ways to access the body of the request, all using `content()`:
+
+*   `content(r, "text")` accesses the body as a character vector:
+
+    ```{r}
+    r <- GET("http://httpbin.org/get")
+    content(r, "text")
+    ```
+
+    httr will automatically decode content from the server using the encoding 
+    supplied in the `content-type` HTTP header. Unfortunately you can't always 
+    trust what the server tells you, so you can override encoding if needed:
+
+    ```{r, eval = FALSE}
+    content(r, "text", encoding = "ISO-8859-1")
+    ```
+
+    If you're having problems figuring out what the correct encoding 
+    should be, try `stringi::stri_enc_detect(content(r, "raw"))`.
+
+*   For non-text requests, you can access the body of the request as a 
+    raw vector:
+
+    ```{r}
+    content(r, "raw")
+    ```
+    
+    This is exactly the sequence of bytes that the web server sent, so this is
+    the highest fidelity way of saving files to disk:
+    
+    ```{r, eval = FALSE}
+    bin <- content(r, "raw")
+    writeBin(bin, "myfile.txt")
+    ```
+
+*   httr provides a number of default parsers for common file types:
+
+    ```{r}
+    # JSON automatically parsed into named list
+    str(content(r, "parsed"))
+    ```
+    
+    See `?content` for a complete list.
+    
+    These are convenient for interactive usage, but if you're writing an API
+    wrapper, it's best to parse the text or raw content yourself and check it
+    is as you expect. See the API wrappers vignette for more details.
+
+### The headers
+
+Access response headers with `headers()`:
+
+```{r}
+headers(r)
+```
+
+This is basically a named list, but because http headers are case insensitive, indexing this object ignores case:
+
+```{r}
+headers(r)$date
+headers(r)$DATE
+```
+
+### Cookies
+
+You can access cookies in a similar way:
+
+```{r}
+r <- GET("http://httpbin.org/cookies/set", query = list(a = 1))
+cookies(r)
+```
+
+Cookies are automatically persisted between requests to the same domain:
+
+```{r}
+r <- GET("http://httpbin.org/cookies/set", query = list(b = 1))
+cookies(r)
+```
+
+## The request
+
+Like the response, the request consists of three pieces: a status line, headers and a body. The status line defines the http method (GET, POST, DELETE, etc) and the url. You can send additional data to the server in the url (with the query string), in the headers (including cookies) and in the body of `POST()`, `PUT()` and `PATCH()` requests.
+
+### The url query string
+
+A common way of sending simple key-value pairs to the server is the query string: e.g. `http://httpbin.org/get?key=val`. httr allows you to provide these arguments as a named list with the `query` argument. For example, if you wanted to pass `key1=value1` and `key2=value2` to `http://httpbin.org/get` you could do:
+
+```{r}
+r <- GET("http://httpbin.org/get", 
+  query = list(key1 = "value1", key2 = "value2")
+)
+content(r)$args
+```
+
+Any `NULL` elements are automatically dropped from the list, and both keys and values are escaped automatically.
+
+```{r}
+r <- GET("http://httpbin.org/get", 
+  query = list(key1 = "value 1", "key 2" = "value2", key2 = NULL))
+content(r)$args
+```
+
+### Custom headers
+
+You can add custom headers to a request with `add_headers()`:
+
+```{r}
+r <- GET("http://httpbin.org/get", add_headers(Name = "Hadley"))
+str(content(r)$headers)
+```
+
+(Note that `content(r)$header` retrieves the headers that httpbin received. `headers(r)` gives the headers that it sent back in its response.)
+
+## Cookies
+
+Cookies are simple key-value pairs like the query string, but they persist across multiple requests in a session (because they're sent back and forth every time). To send your own cookies to the server, use `set_cookies()`:
+
+```{r}
+r <- GET("http://httpbin.org/cookies", set_cookies("MeWant" = "cookies"))
+content(r)$cookies
+```
+
+Note that this response includes the `a` and `b` cookies that were added by the server earlier.
+
+### Request body
+
+When `POST()`ing, you can include data in the `body` of the request. httr allows you to supply this in a number of different ways. The most common way is a named list:
+
+```{r}
+r <- POST("http://httpbin.org/post", body = list(a = 1, b = 2, c = 3))
+```
+
+You can use the `encode` argument to determine how this data is sent to the server:
+
+```{r}
+url <- "http://httpbin.org/post"
+body <- list(a = 1, b = 2, c = 3)
+# Form encoded
+r <- POST(url, body = body, encode = "form")
+# Multipart encoded
+r <- POST(url, body = body, encode = "multipart")
+# JSON encoded
+r <- POST(url, body = body, encode = "json")
+```
+
+To see exactly what's being sent to the server, use `verbose()`. Unfortunately due to the way that `verbose()` works, knitr can't capture the messages, so you'll need to run these from an interactive console to see what's going on.
+
+```{r, eval = FALSE}
+POST(url, body = body, encode = "multipart", verbose()) # the default
+POST(url, body = body, encode = "form", verbose())
+POST(url, body = body, encode = "json", verbose())
+```
+
+`PUT()` and `PATCH()` can also have request bodies, and they take arguments identically to `POST()`.
+
+You can also send files off disk:
+
+```{r, eval = FALSE}
+POST(url, body = upload_file("mypath.txt"))
+POST(url, body = list(x = upload_file("mypath.txt")))
+```
+
+(`upload_file()` will guess the mime-type from the extension - using the `type` argument to override/supply yourself.)
+
+These uploads stream the data to the server: the data will be loaded in R in chunks then sent to the remote server. This means that you can upload files that are larger than memory.
+
+See `POST()` for more details on the other types of thing that you can send: no body, empty body, and character and raw vectors.
+
+
+```{r}
